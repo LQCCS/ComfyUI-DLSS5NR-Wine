@@ -94,6 +94,21 @@ class Dlss5NRWineError(RuntimeError):
     pass
 
 
+def _resolve_choice(value, table, what):
+    """按前缀回退匹配。档位文案改过之后，老工作流里存的旧字符串仍然要能命中。
+
+    model_preset 之前走的是 MODEL_PRESETS.get(value, 0)，认不出来的档位会静默
+    退回驱动默认 —— 等于悄悄关掉最大的清晰度杠杆，而且哪里都不报错。
+    """
+    if value in table:
+        return table[value]
+    head = str(value).split(" ")[0]
+    for key, resolved in table.items():
+        if key.split(" ")[0] == head:
+            return resolved
+    raise Dlss5NRWineError("未知%s %r，可选：%s" % (what, value, list(table)))
+
+
 def _load_upstream(repo: Path):
     """把上游前端当模块加载，借它的协议常量与时域向导。"""
     tool = repo / "tools" / "dlss5nr_video.py"
@@ -169,6 +184,25 @@ class DLSS5NRWineUpscale:
             }
         }
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, scale, model_preset):
+        """让上面的前缀回退真的有机会跑到。
+
+        ComfyUI 会拿 COMBO 的值去比对**当前**选项列表，对不上就直接以
+        "Value not in list" 拒掉整个 prompt —— 节点代码一行都不会执行。所以
+        80ff35e 给 1.0x 改名之后，改名前存下的工作流其实是打不开的，
+        upscale() 里那段前缀回退永远走不到。
+
+        在这里点名 scale 和 model_preset，这两项的校验就交给我们自己做。
+        """
+        for value, table, what in ((scale, SCALE_CHOICES, "放大档"),
+                                   (model_preset, MODEL_PRESETS, "模型预设")):
+            try:
+                _resolve_choice(value, table, what)
+            except Dlss5NRWineError as exc:
+                return str(exc)
+        return True
+
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("image", "report")
     FUNCTION = "upscale"
@@ -193,17 +227,7 @@ class DLSS5NRWineUpscale:
         if not bridge.is_file():
             raise Dlss5NRWineError("缺 dlss5nr_bridge.dll：%s" % bridge)
 
-        # 旧工作流可能存着改名前的档位字符串（例如 1.0x 那条加了警告后名字变了），
-        # 按前缀回退匹配，别让老文件直接报 KeyError。
-        if scale in SCALE_CHOICES:
-            factor = SCALE_CHOICES[scale]
-        else:
-            head = scale.split(' ')[0]
-            hit = [v for k, v in SCALE_CHOICES.items() if k.split(' ')[0] == head]
-            if not hit:
-                raise Dlss5NRWineError(
-                    "未知放大档 %r，可选：%s" % (scale, list(SCALE_CHOICES)))
-            factor = hit[0]
+        factor = _resolve_choice(scale, SCALE_CHOICES, "放大档")
         img = image.detach().cpu().float().clamp(0.0, 1.0).numpy()
         if img.ndim != 4 or img.shape[-1] < 3:
             raise Dlss5NRWineError("IMAGE 形状不对：%s" % (tuple(img.shape),))
@@ -231,7 +255,7 @@ class DLSS5NRWineUpscale:
         # 只用 builtin(=n) 会让 NGX 起来但 NvAPI 看不到物理显卡 —— 上游注释与我们实测一致
         env.setdefault("WINEDLLOVERRIDES", "d3d12,d3d12core,nvapi64,dxgi=n,b")
         env.setdefault("WINEDEBUG", "-all")
-        mp = MODEL_PRESETS.get(model_preset, 0)
+        mp = _resolve_choice(model_preset, MODEL_PRESETS, "模型预设")
         if mp:
             env["DLSS5NR_MODEL_PRESET"] = str(mp)
         else:
@@ -253,9 +277,12 @@ class DLSS5NRWineUpscale:
             raise Dlss5NRWineError("%s\n---- host stderr ----\n%s" % (msg, tail))
 
         try:
+            # host 校验 warmup_frames > frame_count 就直接拒收 DNR2 头（退出码 5），
+            # 前端拿到的是一句没有上下文的 BrokenPipeError。批量小于 warmup 时
+            # （单张图最常见：默认 warmup=8 而 n=1）必须先夹住。
             proc.stdin.write(V.HEADER.pack(
                 V.MAGIC_DNR2, in_w, in_h, out_w, out_h,
-                int(warmup_frames), int(n), int(perf_quality),
+                min(int(warmup_frames), int(n)), int(n), int(perf_quality),
                 0,                              # profile
                 int(preset), int(STYLE_CHOICES[style]),
                 1 if auto_mask else 0,
