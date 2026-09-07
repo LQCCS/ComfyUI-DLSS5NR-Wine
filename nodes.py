@@ -41,8 +41,15 @@ DEFAULT_DISPLAY = ":99"
 # 档位 -> (倍率, PerfQualityValue)。取自上游 _PERF_QUALITY，写死在这里只是为了
 # 让下拉框有稳定顺序；真正的值仍从上游模块校验。
 SCALE_CHOICES = {
-    # ⚠️ 1.0x 没有 carrier，feature 18 直接作用在已经清晰的原片上会把它磨软
-    #    （实测 -3.9%）。feature 18 是给「放大后变软的画面」补结构的，别用 1.0x 求清晰。
+    # 🔴 2026-09-04 订正：下面这条"别用 1.0x"**已存疑，下拉框文案暂未改**（改枚举
+    #    字符串会让存了该值的旧工作流报"值不适用"，与 model_preset 插中间同类事故）。
+    #    原话：「1.0x 没有 carrier，会把原片磨软（实测 -3.9%）」。
+    #    问题出在判据：那 -3.9% 量的是"高频能量 vs Lanczos"，而 DLSS5 NR **按设计就会
+    #    降低整体高频**（生成噪声被去掉），它加的是材质结构。用错的尺子量出的负数
+    #    不能证明它变差。Blueforcer/ComfyUI-DLSS5-Enhancer 的实测推荐里，
+    #    「清理生成视频、不改分辨率」用的**正是 1.0x DLAA**。
+    #    → 想要"更干净的原尺寸"，1.0x 可能反而是对的；想要更大尺寸才选 1.724x/2.0x。
+    #    结论待本机实测，别再照抄下面这个标签。
     "1.0x (DLAA / 原尺寸·会变软，别用来求清晰)": 1.0,
     "1.5x (Quality)": 1.5,
     "1.724x (Balanced)": 1.724,
@@ -70,10 +77,16 @@ MODEL_PRESETS = {"Default (驱动默认·实测=K)": 0, "J (10)": 10, "K (11)": 
 #                Merserk UI 放到 0-2。实测 3.0 -> 高频能量 +9.7%、4.0 -> +12.8%，
 #                越过文档上限仍在起效，但已无任何文档背书，自担风险。
 #   tone       ✅ 低频：整体光照与色彩响应。设 0 = 完全保留原片配色。效果比 structure 小。
-#   skin       ⚠️ 只有 auto_mask=True 时才有效果（实测：mask 关时改它输出逐字节不变）。
+#   skin       🔴 **这才是 DLSS5 NR 用在视频上真正能做的事**，别再当成可选项。
+#                只有 auto_mask=True 时才生效（mask 关时改它输出逐字节不变）。
 #                -1 的语义是「跟随 structure」，不是关闭。
-#   auto_mask  ✅ 自动识别皮肤区域并保护它不被过度锐化 —— 因此会**降低**整体锐度。
-#                人脸特写建议开，产品/环境建议关。
+#                Blueforcer 单变量实测推荐 skin=2.0 + mask=on。
+#   auto_mask  🔴 2026-09-04 订正：原注释写「会降低整体锐度，产品/环境建议关」——
+#                **框架就是错的**。DLSS5 NR 在视频上做的是**材质重建**（皮肤/头发/织物），
+#                不是锐化；整体细节能量**按设计会下降**（生成噪声被去掉）。
+#                拿"整体锐度"判它 = 用错的尺子。mask 关 = skin 整条路是关的。
+#                依据：Blueforcer/ComfyUI-DLSS5-Enhancer README「Recommended settings」，
+#                该段自陈"defaults come from measurements, not from taste"。
 #   intensity  ❌ 本路径无效。NVIDIA SDK 里根本没有独立的 intensity（只有 Structure/Tone
 #                两个滑块）；RenoDX 的 NRIntensity 应是它自己混合层的乘数，而这条 bridge
 #                直接调 DLSSNR 快照、没有那层混合。实测改它输出逐字节不变。
@@ -151,9 +164,9 @@ class DLSS5NRWineUpscale:
                 "structure": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 4.0, "step": 0.05,
                                         "tooltip": "✅ 唯一真正的清晰度杠杆。NVIDIA SDK 0-1、Merserk UI 0-2；实测 3.0=+9.7% 4.0=+12.8% 仍在起效但超出文档。人脸 1.5-2.0，产品/环境 2.0-3.0"}),
                 "skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05,
-                                   "tooltip": "-1 = 跟随 structure。⚠️ 只有 auto_mask 开启时才有效果"}),
+                                   "tooltip": "🔴 视频上真正起作用的那个。只有 auto_mask 开启时才生效（关时逐字节不变）。-1=跟随 structure。实测推荐 2.0 + auto_mask 开"}),
                 "auto_mask": ("BOOLEAN", {"default": False,
-                                          "tooltip": "⚠️ 想要清晰就关掉。实测开启把 +1.9% 压回 -0.4%（相对 Lanczos）。画面里皮肤占比越大，它抑制得越多"}),
+                                          "tooltip": "🔴 订正：旧提示说'想要清晰就关掉'已作废——那是拿高频能量当判据，而本节点按设计就会降低整体高频。关掉它 skin 完全失效，等于放弃材质重建。人脸/化妆品建议开"}),
                 "reset_each_frame": ("BOOLEAN", {"default": False,
                                                  "tooltip": "关掉时域复用。静态图批量走这个，视频不要开。"}),
                 "channel_order": (["auto", "RGBA", "BGRA"],),

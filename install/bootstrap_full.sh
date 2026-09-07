@@ -261,8 +261,13 @@ if [ "$FAILED" -eq 0 ]; then
    1) supervisorctl restart comfyui     # 自定义节点只在启动时扫描
    2) 工作流里加 "DLSS 5 NR · 自检 (Wine)" 先跑一遍
    3) 再接 "DLSS 5 神经渲染 · Wine (Linux)"
-      推荐档：scale=1.724x/2.0x  model_preset=M  structure=2.0  auto_mask=关
-      ⚠️ 不要用 1.0x —— 那一档没有 carrier，只会让画面变软。
+      推荐档（2026-09-04 按 Blueforcer 单变量实测订正）：
+        model_preset=M   auto_mask=开   skin=2.0   structure=1.5~2.0
+        只清理不放大 -> scale=1.0x (DLAA)；要放大 -> 1.724x / 2.0x
+      关键：skin 只在 auto_mask=开 时生效；关着等于放弃材质重建。
+      别拿"整体锐度/高频能量"判好坏 —— 本节点按设计就会降低整体高频，
+      它加的是皮肤/头发/织物的材质结构。用眼睛看毛孔、发丝、织物。
+      ⚠️ 肤色可能漂移（社区报告），化妆品/人像片必须专门核对这一项。
 EOF
 else
     echo ""
